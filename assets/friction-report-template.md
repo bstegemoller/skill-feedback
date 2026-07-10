@@ -36,4 +36,4 @@ no business details — describe the task generically.
 <!-- Is this definitely the skill's fault, or possibly the environment's? State honestly. -->
 
 ---
-*Drafted by an AI agent during real task execution; reviewed and filed by a human. Generated with the [skill-feedback](https://github.com/REPLACE-WITH-YOUR-REPO) skill.*
+*Drafted by an AI agent during real task execution; reviewed and filed by a human. Generated with the [skill-feedback](https://github.com/bstegemoller/skill-feedback) skill.*
