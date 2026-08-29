@@ -1,10 +1,13 @@
 # Memory Library — Design Specification
 
-**Status:** Draft v0.2 — ideation output, not yet implemented
+**Status:** Draft v0.3 — ideation output, not yet implemented
 **Working name:** the Stacks (a file-based, librarian-curated memory library for LLM agents)
 **Changes in v0.2:** adds the steward role (audit, health, bounded self-tuning), the
 change-authority ladder (P8), work-proportional triggers replacing time schedules,
 and prompts-as-files so instruction revisions are git-gated diffs.
+**Changes in v0.3:** adds the sorting-room scale function (parallel triage workers
+under a single-cataloger invariant, P9), per-agent intake quotas with trust weights
+for multi-agent fleets, and per-session access logs (resolving open question 1).
 
 ---
 
@@ -48,7 +51,7 @@ pre-digested, low-noise context.
 ## 3. Core principles
 
 These are the load-bearing decisions. Everything in §4–§11 follows from them.
-**P1–P8 are the constitution: no agent process may edit this section or the rules it
+**P1–P9 are the constitution: no agent process may edit this section or the rules it
 states. Only a human changes the constitution.**
 
 | # | Principle | Rationale |
@@ -61,6 +64,7 @@ states. Only a human changes the constitution.**
 | P6 | **Strongest model writes, any model reads.** Consolidation and audit are asynchronous, so they can afford the best available model (or an occasional cloud call). Query-time agents can be small. | A weak librarian corrupts the library and errors compound silently. Never let the cheapest model hold the pen on long-term memory. |
 | P7 | **Tiering is computed from actual use**, not guessed at write time. | Frequency + recency with decay (ACT-R base-level activation) is a proven model of "stronger pathways." The access log is ground truth. |
 | P8 | **Change authority is layered.** Data changes are autonomous; parameter changes are autonomous only within human-declared bounds; instruction changes are proposals gated by a human; the constitution is human-only. No agent audits its own output. | A system that can rewrite its own operating instructions unsupervised is a self-modifying instruction store — the drift it was built to correct can then live in the corrector. The recursion must terminate at the human + git, not at another agent. |
+| P9 | **Many hands may sort; one mind catalogs.** Parallel workers may triage, draft, and annotate — read-only against the library, writing only to staging. Integration (reconciling, superseding, cataloging, re-tiering, cap enforcement) is done by exactly one librarian per cycle, and the library is never sharded into per-topic sub-librarians. | The librarian's product is global coherence — contradictions span items, the taxonomy is one tree, the cap is one budget. Parallel writers or shards reintroduce every distributed-consistency problem the single-writer design exists to avoid. The serial step stays cheap because workers pre-digest its input. |
 
 ### The change-authority ladder (P8, concretely)
 
@@ -87,8 +91,11 @@ library/
 │   ├── librarian.md          # the consolidation-cycle prompt (§8)
 │   └── steward.md            # the audit-cycle prompt (§10)
 └── meta/
-    ├── config.yml            # caps, decay, thresholds, trigger counts, tuning bounds
-    ├── access.log            # append-only JSONL, written by readers
+    ├── config.yml            # caps, decay, thresholds, trigger counts, quotas, tuning bounds
+    ├── access/               # per-session read logs (JSONL), one file per session
+    │   └── <session-id>.jsonl
+    ├── access.log            # canonical merged log (librarian output, §8.5)
+    ├── staging/              # sorting-room worker output: triage annotations, entry drafts
     ├── activation.json       # computed scores per entry/topic (librarian output)
     ├── misses.log            # queries the library could not answer (JSONL)
     ├── proposals/            # steward's instruction-change drafts, awaiting human review
@@ -104,11 +111,15 @@ Notes:
   diffable by git. No database in the core loop.
 - Prompts live in the repo so "revise the instructions" is a concrete, reviewable
   diff — not an invisible edit to some agent's configuration.
-- Write permissions by role: ordinary agents → `intake/` + the two logs only.
-  Librarian → curated tiers, `activation.json`, `reports/`. Steward → `config.yml`
-  (bounded values only), `health/`, `proposals/`. Nobody but a human → `prompts/`,
-  §3, or the bounds in `config.yml`. Convention + review in Phase 1; commit hooks
-  in Phase 2.
+- Write permissions by role: ordinary agents → `intake/`, their own `meta/access/`
+  file, and `misses.log` only. Sorting-room workers (§8a) → `meta/staging/` only.
+  Librarian → curated tiers, `access.log`, `activation.json`, `reports/`. Steward →
+  `config.yml` (bounded values only), `health/`, `proposals/`. Nobody but a human →
+  `prompts/`, §3, or the bounds in `config.yml`. Convention + review in Phase 1;
+  commit hooks in Phase 2.
+- Per-session access files exist so parallel sessions (including ephemeral cloud
+  containers that must push each cycle) never contend on one log — each session
+  appends to its own file and the librarian merges them (§8.5).
 
 ## 5. Entry format
 
@@ -153,7 +164,8 @@ itself is involved** (P1).
 3. Otherwise follow the index pointer to `catalog/<topic>.md`. If the curated summary
    suffices — done. Log the access at depth 1.
 4. Otherwise descend to the specific `stacks/` entries the catalog cites. Log at depth 2.
-5. Append one JSONL line per touched artifact to `meta/access.log`:
+5. Append one JSONL line per touched artifact to this session's own file,
+   `meta/access/<session-id>.jsonl`:
    `{"ts": "...", "id": "...", "depth": 0|1|2, "agent": "...", "query_hint": "..."}`
 6. **On a miss** (no thread exists): log it to `meta/misses.log`, search externally,
    and write findings — with sources — to `intake/`. The library learns from its own
@@ -164,10 +176,29 @@ Logging is best-effort append-only; a failed log write never blocks a read.
 
 ## 7. Write protocol (ordinary agents)
 
-Ordinary agents write **only** to `intake/` and the two logs. An intake note is
+Ordinary agents write **only** to `intake/` and the logs. An intake note is
 free-form markdown plus minimal frontmatter (source, timestamp, submitting agent).
 No tagging, no cataloging, no editing of curated tiers — that is the librarian's job.
 Cheap capture, expensive curation, in that order.
+
+**Intake quotas and trust weights (multi-agent fleets).** Intake volume scales with
+agent count, and so does noise; ten enthusiastic workers filing observations can bury
+the signal. Two mechanical controls in `config.yml`:
+
+- **Quotas:** each agent identity gets a per-day intake budget (default in config,
+  overridable per agent). Over-quota submissions are not rejected — they land in
+  intake flagged `over_quota: true`, and the librarian triages them last and with a
+  skeptical eye. Quotas shape attention, not admission; rejection would lose
+  information and invite workarounds.
+- **Trust weights:** each agent identity carries a weight (e.g. orchestrator 1.0,
+  spawned worker 0.5, unknown agent 0.25) recorded in the intake frontmatter by the
+  submitting hook. The librarian uses it as a prior — a low-weight observation needs
+  corroboration before it earns more than `confidence: reported` — never as a filter.
+  Weights are parameters: the steward tunes them within bounds; new identities start
+  at the lowest weight and earn upward via steward review of their track record.
+
+Both controls are enforced by the intake hook (a script reading config), not by
+model obedience.
 
 ## 8. The librarian: consolidation cycle ("sleep")
 
@@ -198,7 +229,9 @@ Each cycle, in order:
 4. **Catalog.** Update the affected `catalog/<topic>.md` files: curated summary,
    pointers to entries, open questions. Split a topic when its catalog file exceeds
    its own size budget; merge topics that have withered.
-5. **Re-tier.** Recompute activation (§9) from `access.log`. Promote hot topics to
+5. **Merge & re-tier.** Merge the per-session files in `meta/access/` into the
+   canonical `access.log` (a script step, order-insensitive; merged files are
+   removed, surviving in git history). Recompute activation (§9) from `access.log`. Promote hot topics to
    more prominent / more detailed treatment in `INDEX.md`; demote cold ones to a
    one-line stub with a pointer. Deep entries never lose their catalog pointer —
    demotion changes prominence, not reachability.
@@ -213,6 +246,46 @@ Each cycle, in order:
    human review (P5).
 
 The librarian does **not** audit its own output — that is the steward's job (P8, §10).
+
+### 8a. The sorting room — scaling the cycle (P9)
+
+When intake outgrows what one cycle handles comfortably, the system scales through
+an ordered ladder of levers — each cheaper than the next, each tried (or ruled out)
+before the next engages:
+
+1. **More frequent cycles (automatic).** The work-proportional trigger already fires
+   more often under load, shrinking batch size. Chronic overload usually means
+   `intake_trigger` is set too high — a bounded steward tune, not an architecture
+   change.
+2. **Mechanical & cheap-model triage.** Hash-based dedupe, quota flagging, and
+   junk/duplicate/substantive classification are scripts plus (at most) a small
+   cheap model. P6 cuts both ways: judgment needs the strongest model; sorting
+   doesn't. No agents spawned.
+3. **The sorting room: parallel triage workers.** When unprocessed intake exceeds
+   `worker_trigger`, the librarian spawns up to `max_workers` ephemeral workers.
+   Workers do the **per-item, read-only** work: triage classification, draft
+   frontmatter and summaries, source spot-checks, lookups of likely-related
+   entries. They read the library freely but write **only** to `meta/staging/`,
+   and their output is treated exactly like intake — untrusted drafts the librarian
+   uses or discards. The change-authority ladder doesn't acquire a new rung;
+   workers live below the data layer.
+
+**What stays serial, always:** integration — cross-item reconciliation,
+supersession decisions, catalog updates, re-tiering, cap enforcement. One librarian
+per cycle does all of it (P9). This does not bog down: integrating pre-triaged,
+pre-summarized, junk-filtered items is a fraction of raw processing, so the sorting
+room shrinks the serial step's cost rather than competing with it. Many hands sort;
+one mind catalogs.
+
+**Hard stop:** the library is never sharded into per-topic sub-librarians. That
+reintroduces distributed consistency (cross-topic links, supersessions spanning
+shards, ownership of the one index cap) — the exact costs the single-writer design
+avoids. Revisit only if a single librarian with a full sorting room demonstrably
+cannot keep up; for a personal or small-team library, that is likely never.
+
+**Deployment note:** the sorting room pays off only where parallelism is real
+(e.g. cloud subagent fan-out). On a single local GPU, spawning workers just queues
+serial inference plus orchestration overhead — there, lever 2 is the whole game.
 
 ## 9. Activation scoring
 
@@ -298,10 +371,23 @@ triggers:
   steward:
     every_n_cycles: 5           # audit after every 5 librarian cycles
     on_flags: true              # or immediately when a cycle report carries flags
+scaling:                        # §8a sorting room
+  worker_trigger: 40            # unprocessed intake beyond which workers spawn
+  max_workers: 4                # hard cap on parallel triage workers
+intake:                         # §7 quotas & trust weights
+  default_quota_per_day: 10
+  trust_weights:
+    orchestrator: 1.0
+    worker: 0.5
+    unknown: 0.25
 bounds:                         # steward may tune inside these; only a human edits the bounds
   decay_d:        [0.3, 0.7]
   intake_trigger: [10, 50]
   audit_sample_n: [5, 50]
+  worker_trigger: [20, 100]
+  max_workers:    [1, 8]
+  default_quota_per_day: [5, 50]
+  trust_weights:  [0.1, 1.0]    # per-identity values tunable in this range
 ```
 
 ## 11. Threat model & guardrails (summary)
@@ -317,6 +403,9 @@ bounds:                         # steward may tune inside these; only a human ed
 | Runaway self-modification (drift living in the corrector) | P8 change-authority ladder; prompts and bounds are human-gated; constitution immutable to agents |
 | Silent bad edits | P5; one commit per cycle, human-readable report, git revert |
 | Maintenance overhead / unnecessary runs | Work-proportional script triggers (§8, §10); zero LLM cost when idle |
+| Intake flooding by a noisy agent fleet | §7 per-agent quotas (attention-shaping, not rejection) + trust-weight priors; steward tunes both within bounds |
+| Parallel workers corrupting coherence | P9 single-cataloger invariant; workers are read-only + staging-only; integration never parallelized; no sharding |
+| Concurrent sessions contending on the access log | Per-session log files merged at cycle time (§4, §8.5) |
 | Tier churn | §9 hysteresis + grace period; steward flags sustained churn as a tuning signal |
 | Lost history / temporal questions | §5 supersession with validity windows; append-mostly stacks |
 
@@ -356,11 +445,19 @@ the catalog rather than building one.
   indicts the librarian model or its prompt (steward proposes accordingly).
 - **Demotion/promotion volume** — with hysteresis, should settle; sustained churn
   means thresholds need tuning (a bounded steward adjustment).
+- **Intake volume and junk ratio per agent identity** — feeds quota and trust-weight
+  tuning; a rising junk ratio from one identity is a targeted signal, not a reason
+  to throttle the whole fleet.
+- **Sorting-room utilization** — how often workers spawn and their draft acceptance
+  rate. Workers spawning every cycle means `intake_trigger` is too high (lever 1
+  before lever 3); a low acceptance rate means worker triage instructions need a
+  steward proposal.
 
 ## 14. Open questions
 
-1. Multi-agent write contention on `access.log` in parallel sessions (likely fine as
-   append-only JSONL; verify).
+1. ~~Multi-agent write contention on `access.log` in parallel sessions.~~
+   **Resolved in v0.3:** per-session log files under `meta/access/`, merged by the
+   librarian at cycle time — no shared-file writes on the read path at all.
 2. Topic taxonomy governance — librarian-invented tags will drift. Partially
    addressed in v0.2: the steward monitors tag sprawl as a health metric and
    proposes controlled-vocabulary changes via `meta/proposals/`; a human ratifies.
@@ -376,3 +473,9 @@ the catalog rather than building one.
    Likely pragmatic answer: before/after trend comparison over several cycles, and
    a human sanity check in the health report — accept that this is engineering
    judgment, not science.
+6. Trust-weight governance at fleet scale: new agent identities start at the lowest
+   weight and earn upward via steward review, but "identity" is only as strong as
+   the hook that stamps it — a misconfigured or spoofed agent name inherits the
+   wrong prior. Fine for a personal or small-team deployment where identities are
+   few and human-known; needs real thought (signing? allowlists?) before any
+   open-fleet use.
