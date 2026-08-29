@@ -1,7 +1,13 @@
-# Memory Library — Design Specification
+# Carrel — Design Specification
 
-**Status:** Draft v0.3 — ideation output, not yet implemented
-**Working name:** the Stacks (a file-based, librarian-curated memory library for LLM agents)
+**Carrel** — the self-tending memory library for LLM agents.
+*Self-Tending, Agent-Curated Knowledge Stacks.*
+A carrel is the small study desk in a library's stacks: the whole collection behind
+you, only the right few books on the desk. That is what this system does for an agent.
+
+**Status:** Draft v0.4 — ideation output, not yet implemented
+**Named in v0.4:** Carrel (working name through v0.3: "the Stacks," surviving in the
+tagline above)
 **Changes in v0.2:** adds the steward role (audit, health, bounded self-tuning), the
 change-authority ladder (P8), work-proportional triggers replacing time schedules,
 and prompts-as-files so instruction revisions are git-gated diffs.
