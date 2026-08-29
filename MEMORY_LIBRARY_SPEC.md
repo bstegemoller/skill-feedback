@@ -8,6 +8,10 @@ and prompts-as-files so instruction revisions are git-gated diffs.
 **Changes in v0.3:** adds the sorting-room scale function (parallel triage workers
 under a single-cataloger invariant, P9), per-agent intake quotas with trust weights
 for multi-agent fleets, and per-session access logs (resolving open question 1).
+**Changes in v0.4:** adds the escalation policy (§10a) — management by exception
+with green/yellow/red lights, a digest-not-diffs review artifact, and a configurable
+review posture — so the system runs unattended by default and summons its human
+only where judgment is irreducible.
 
 ---
 
@@ -39,6 +43,9 @@ pre-digested, low-noise context.
 6. Full provenance, human-auditable history, rollback — the library lives in git.
 7. Works with weak query-time models: the top index must always fit the smallest
    context window the system serves.
+8. Runs unattended by default: human judgment is engaged only where it is
+   irreducible (instruction changes and ownership questions), by exception and at
+   long intervals — never as routine per-commit review (§10a).
 
 **Non-goals**
 
@@ -72,7 +79,7 @@ states. Only a human changes the constitution.**
 |-------|----------|----------------|------|
 | **Data** | entries, catalogs, `INDEX.md`, activation scores | Librarian | Autonomous; git-reviewable after the fact |
 | **Parameters** | decay `d`, tier thresholds, trigger counts, audit sample size | Steward | Autonomous **within bounds declared in `config.yml`**; one change per cycle, rationale logged |
-| **Instructions** | `prompts/*.md` (librarian, steward, reader protocol), the bounds themselves | Steward **proposes** a diff into `meta/proposals/` | **Human approves and applies** |
+| **Instructions** | `prompts/*.md` (librarian, steward, reader protocol), the bounds themselves | Steward **proposes** a diff into `meta/proposals/` | **Human approves and applies** — batched to the yellow queue (§10a); a pending proposal never blocks operation, the system keeps running on current instructions |
 | **Constitution** | §3 principles, cap semantics, the ladder itself | Human only | — |
 
 ## 4. Repository layout
@@ -343,6 +350,9 @@ Each steward cycle:
    findings, defect list. **Defects in content are reported, not fixed** — the
    steward never edits entries or catalogs; the librarian repairs flagged items
    next cycle. (An auditor that also edits the books stops being an auditor.)
+   When the yellow queue is due (§10a — interval elapsed or threshold exceeded),
+   also compile the owner digest; when a red condition is met, page the owner via
+   the configured channel.
 5. **Tune parameters — within bounds.** Adjust values in `config.yml` (decay `d`,
    thresholds, trigger counts, sample size) only inside the human-declared bounds,
    at most one parameter per cycle, with the observed rationale logged in the health
@@ -380,6 +390,11 @@ intake:                         # §7 quotas & trust weights
     orchestrator: 1.0
     worker: 0.5
     unknown: 0.25
+review:                         # §10a escalation policy
+  posture: exception_only       # per_cycle | interval | exception_only
+  interval_months: 6            # yellow-queue digest cadence
+  yellow_queue_threshold: 10    # ... or when this many items are pending
+  red_channel: push             # how the owner is paged: push | email | file
 bounds:                         # steward may tune inside these; only a human edits the bounds
   decay_d:        [0.3, 0.7]
   intake_trigger: [10, 50]
@@ -389,6 +404,57 @@ bounds:                         # steward may tune inside these; only a human ed
   default_quota_per_day: [5, 50]
   trust_weights:  [0.1, 1.0]    # per-identity values tunable in this range
 ```
+
+### 10a. Escalation policy — management by exception
+
+The system is engineered to run like a well-built car: thousands of miles without a
+second thought, maintenance at intervals, warning lights for the rare genuine
+problem. A gate nobody operates is worse than no gate — it provides false
+assurance — so routine per-commit human review is **not** part of normal operation.
+
+The governing test: **a human is required only where an error is both compounding
+and invisible from inside the system.** Applied to every gate in the design, that
+leaves exactly two irreducible human roles:
+
+1. **Instruction changes** (P8): drift in the corrector cannot be detected by the
+   corrector. But this gate blocks *change*, not *operation* — a pending proposal
+   waits in the queue indefinitely while the system runs on its current, known-good
+   instructions. The safe default is "no change," so the gate creates no
+   maintenance pressure.
+2. **Ownership questions**: the steward out-performs a human at verifying summaries
+   against sources — technical QA is its job, not the owner's. What only the owner
+   can answer are questions of value and priority: is this fact load-bearing?
+   should the library remember this at all? does this domain matter more than that
+   one? These are five-second questions when asked plainly.
+
+Everything else runs on a three-light model:
+
+- **Green — the default, nearly always.** Librarian and steward run, commit, and
+  tune autonomously. No notifications. Git history is the after-the-fact audit
+  trail; nobody is expected to read it routinely.
+- **Yellow — the batch queue.** Instruction proposals and non-urgent flags
+  accumulate silently in `meta/proposals/` and the health reports. They surface at
+  the configured interval (default 6 months) or when the queue exceeds its
+  threshold — as a **digest, never diffs**: a plain-language "state of the library"
+  of roughly a page, compiled by the steward, ending in specific yes/no questions
+  phrased in the owner's domain ("the librarian keeps over-compressing client
+  notes — approve the revised instruction?"), skimmable in minutes. Approvals apply
+  the queued changes; everything unanswered simply stays queued.
+- **Red — summon now, rare by construction.** A short, *closed* list of conditions
+  pages the owner immediately: suspected injection in intake; a supersession
+  touching a high-activation, load-bearing entry; steward metrics diverging across
+  multiple consecutive cycles; an agent-identity anomaly; an INDEX cap that cannot
+  be met without trimming hot content. Red firing more than a few times a year is
+  itself a defect — tune or fix whatever is crying wolf, because alarm fatigue
+  kills the channel.
+
+**Review posture is deployment configuration**, not doctrine: `per_cycle` (every
+librarian commit reviewed — cautious teams, shakedown periods), `interval`
+(digests on a schedule), or `exception_only` (digest only on threshold or red).
+The honest cost of the relaxed postures is a wider data-layer poisoning window —
+mitigated, imperfectly, by claims-with-sources (P4), steward auditing, and the red
+list. The line held at any posture: **instructions never auto-apply.** That rule is
+constitutional (P8) and survives every configuration.
 
 ## 11. Threat model & guardrails (summary)
 
@@ -406,6 +472,9 @@ bounds:                         # steward may tune inside these; only a human ed
 | Intake flooding by a noisy agent fleet | §7 per-agent quotas (attention-shaping, not rejection) + trust-weight priors; steward tunes both within bounds |
 | Parallel workers corrupting coherence | P9 single-cataloger invariant; workers are read-only + staging-only; integration never parallelized; no sharding |
 | Concurrent sessions contending on the access log | Per-session log files merged at cycle time (§4, §8.5) |
+| Gate abandonment (human review assumed but not sustained) | §10a exception-based posture: unattended by default, digest-not-diffs at intervals, closed red list for genuine emergencies; instructions never auto-apply under any posture |
+| Data-layer poisoning under relaxed review postures | Residual risk, accepted for personal/trusted deployments; mitigated by P4, steward audits, and red-list injection triggers; cautious deployments choose `per_cycle` |
+| Alarm fatigue killing the red channel | Red list is closed and short; red frequency is itself a tracked metric (§13) with >few/year treated as a defect |
 | Tier churn | §9 hysteresis + grace period; steward flags sustained churn as a tuning signal |
 | Lost history / temporal questions | §5 supersession with validity windows; append-mostly stacks |
 
@@ -415,8 +484,9 @@ bounds:                         # steward may tune inside these; only a human ed
 Directory layout, entry format, `config.yml`, the three prompt files. The read/write
 protocols shipped as an agent skill (progressive-disclosure instructions). Librarian
 and steward are prompts you run as ordinary interactive sessions when the trigger
-conditions look met; a human reviews every diff. Proves both loops with zero
-infrastructure.
+conditions look met. Review posture starts at `per_cycle` as a shakedown — not
+doctrine, just verifying the loops work — and relaxes toward `exception_only`
+(§10a) once a few cycles have run clean. Proves both loops with zero infrastructure.
 
 **Phase 2 — scripted triggers + enforcement.**
 The trigger script from §8/§10 runs cheaply on a schedule and launches a cycle
@@ -452,6 +522,9 @@ the catalog rather than building one.
   rate. Workers spawning every cycle means `intake_trigger` is too high (lever 1
   before lever 3); a low acceptance rate means worker triage instructions need a
   steward proposal.
+- **Red-light frequency and yellow-queue age** — reds beyond a few per year mean
+  the red list needs tuning (§10a); a yellow queue never triggering its digest
+  means the interval or threshold is set too loose to matter.
 
 ## 14. Open questions
 
@@ -479,3 +552,8 @@ the catalog rather than building one.
    wrong prior. Fine for a personal or small-team deployment where identities are
    few and human-known; needs real thought (signing? allowlists?) before any
    open-fleet use.
+7. Calibrating the red list (§10a): "load-bearing supersession" and "suspected
+   injection" need operational definitions (an activation percentile? a classifier
+   score?) that only real incidents can tune. Too sensitive breeds alarm fatigue;
+   too lax defeats the channel. Start conservative, treat every red as a calibration
+   data point, and expect the definitions to firm up over the first year.
